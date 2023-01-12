@@ -28,19 +28,29 @@ type Index struct {
 
 // LSM Tree
 type Lsm struct {
-	path     string
+	path string
+
+	//memTable 内存中的数据结构
 	memTable *skiplist.SkipList
 
+	//transLogFile 用于追加写的文件
 	transLogFile       *os.File
 	transLogStrictSync bool // transLog是否需要严格同步
 	closed             bool
 }
 
-// 保存一组key,value
+// Set 保存一组key,value
+// 1、创建数据
+// 2、将数据写入到transLog
+// 3、将数据写入到内存的有序数据结构中
+// 4、当数据size % 3000 ==0 ，每写入3000条数据就从内存中获取当前数据结构的占用大小
+// 5、如果内存中数据结构的大小 > 3M 就像内存中的数据同步到SSTTable文件中
 func (l *Lsm) Set(key string, value string) {
 	data := Data{value: value, timestamp: uint64(time.Now().UnixNano())}
 	l.appendTransLog(key, data) // 写transLog
 	l.memTable.Set(key, data)
+
+	//内存中每有3000条数据就会写入一次磁盘
 	if l.memTable.Len()%memTableCheckInterval == 0 {
 		memTableSize := l.getMemTableSize()
 		if memTableSize > thresholdSize {
@@ -49,7 +59,10 @@ func (l *Lsm) Set(key string, value string) {
 	}
 }
 
-// 把当前memTable中的内容全部同步到SSTable中去
+// SyncMemTable 把当前memTable中的内容全部同步到SSTable中去
+// 1、创建SSLTable
+// 2、将内存中的数据结构重置
+// 3、将transLog文件清空,已保证下次写入
 func (l *Lsm) SyncMemTable() {
 	var err error
 	err = l.createSortedStringTable()
@@ -101,7 +114,9 @@ func (l *Lsm) getMemTableSize() uint64 {
 	return memTableSize
 }
 
-// 创建SSTable
+// createSortedStringTable 创建SSTable
+// 1、如果内存中的memTable 没有数据则直接返回
+// 2、
 func (l *Lsm) createSortedStringTable() error {
 	// 没有数据则无需保存
 	if l.memTable.Len() == 0 {
@@ -119,21 +134,30 @@ func (l *Lsm) createSortedStringTable() error {
 
 		if i%indexOffset == 0 || i+1 == uint64(l.memTable.Len()) {
 			// 把段文件中的稀疏的key的offset信息写到索引中
+			//1、先写入key的大小以及key值
+			//2、在写入当前缓冲区的大小
+			// keySize-key-key在segment文件中的其实offset位置
 			indexOffset := append(addBufHead([]byte(key)), uint32ToBytes(uint32(len(buf)))...)
+
+			//3、将索引信息写入到indexBuf中
 			indexBuf = append(indexBuf, indexOffset...)
 		}
 		i += 1
+
+		//segment: keySize-key-valueSize-value-timeStamp
 		buf = append(buf, encodeKeyAndData(key, data)...)
 	}
 
-	// 段文件
+	// 段文件，生成一个新的段文件
 	segmentFileName := generateSegmentFileName(l.path)
+
+	//将数据写入segment
 	err := ioutil.WriteFile(path.Join(l.path, segmentFileName), buf, 0666)
 	if err != nil {
 		return err
 	}
 
-	// 索引文件
+	// 索引文件，为对应的segment文件生成对应的index文件
 	indexFileName := strings.Replace(segmentFileName, segmentFileSuffix, indexFileSuffix, -1)
 	err = ioutil.WriteFile(path.Join(l.path, indexFileName), indexBuf, 0666)
 	if err != nil {

@@ -113,12 +113,20 @@ func uint64ToBytes(num uint64) []byte {
 }
 
 // 给一段字节数组加上头部信息
+// buf: 具体的key值
 func addBufHead(buf []byte) []byte {
+
+	//key值
 	length := len(buf)
+
 	head := make([]byte, 0, 1)
+	//如果key的长度小于255, 则直接写入一个byte
+	//0xff=255
 	if length < 0xff {
 		head = append(head, byte(length))
 	} else {
+		//0xff=255
+		//先写入255, 然后再写入具体的长度，大小为4 bytes
 		head = append(head, byte(0xff))
 		head = append(head, uint32ToBytes(uint32(length))...)
 	}
